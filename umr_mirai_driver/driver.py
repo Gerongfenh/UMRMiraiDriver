@@ -603,8 +603,6 @@ class MiraiDriver(BaseDriverMixin):
 
         self.bot = Bot(self.qq, host, port, auth_key, loop=self.loop)
         self.updater = Updater(self.bot)
-        self.group_message_ids: Dict[Tuple[int, int], int] = dict()  # (group, sequence id) -> message id
-        self.friend_message_ids: Dict[Tuple[int, int], int] = dict()  # (friend, sequence id) -> message id
 
         @self.updater.add_handler(EventTypes.FriendMessage)
         async def friend_message(event: FriendMessage):
@@ -645,13 +643,12 @@ class MiraiDriver(BaseDriverMixin):
                                          message_id=message_id)
         quote = message_chain.get_quote()
         if quote:
-            quote_id = quote.id >> 32
             unified_message.chat_attrs.reply_to = ChatAttribute(platform=self.name,
                                                                 chat_id=chat_id,
                                                                 chat_type=chat_type,
                                                                 user_id=quote.senderId,
                                                                 name='unknown',
-                                                                message_id=quote_id)
+                                                                message_id=quote.id)
 
         for m in message_chain[1:]:
             if isinstance(m, Image):
@@ -708,12 +705,7 @@ class MiraiDriver(BaseDriverMixin):
                               username: str,
                               user_id: int):
 
-        sequence_id = message_chain.get_source().id
-        message_id = sequence_id >> 32
-        if chat_type == ChatType.GROUP:
-            self.group_message_ids[(chat_id, message_id)] = sequence_id
-        else:
-            self.friend_message_ids[(chat_id, message_id)] = sequence_id
+        message_id = message_chain.get_source().id
 
         set_ingress_message_id(src_platform=self.name,
                                src_chat_id=chat_id,
@@ -800,26 +792,19 @@ class MiraiDriver(BaseDriverMixin):
                              'your account might be suspected of being compromised by Tencent')
 
         if chat_type == ChatType.PRIVATE:
-            quote = self.friend_message_ids.get((to_chat, message.send_action.message_id))
+            quote = message.send_action.message_id or None
             egress_message = await self.bot.send_friend_message(
                 to_chat,
                 messages,
                 quote
             )
         else:
-            quote = self.group_message_ids.get((to_chat, message.send_action.message_id))
+            quote = message.send_action.message_id or None
             egress_message = await self.bot.send_group_message(
                 to_chat,
                 messages,
                 quote
             )
-
-        real_message_id = egress_message.messageId
-        message_id = real_message_id >> 32
-        if chat_type == ChatType.GROUP:
-            self.group_message_ids[(to_chat, message_id)] = real_message_id
-        else:
-            self.friend_message_ids[(to_chat, message_id)] = real_message_id
 
         if message.chat_attrs:
             set_egress_message_id(src_platform=message.chat_attrs.platform,
@@ -829,7 +814,7 @@ class MiraiDriver(BaseDriverMixin):
                                   dst_platform=self.name,
                                   dst_chat_id=to_chat,
                                   dst_chat_type=chat_type,
-                                  dst_message_id=message_id,
+                                  dst_message_id=egress_message.messageId,
                                   user_id=self.qq)
 
     async def is_group_admin(self, chat_id: int, chat_type: ChatType, user_id: int):
