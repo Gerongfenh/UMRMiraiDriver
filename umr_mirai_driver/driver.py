@@ -11,8 +11,9 @@ from unified_message_relay.Core import UMRDriver
 from unified_message_relay.Core import UMRLogging
 from unified_message_relay.Core import UMRConfig
 from typing import Union, Dict, List, Tuple
+from typing_extensions import Literal
+from pydantic import Field
 import threading
-from unified_message_relay.Util.Helper import check_attribute
 
 qq_emoji_list = {  # created by JogleLew and jqqqqqqqqqq, optimized based on Tim's emoji support
     0:   '😮',
@@ -577,29 +578,35 @@ qq_sface_list = {
 }
 
 
+class MiraiDriverConfig(UMRConfig.BaseDriverConfig):
+    Base: Literal['Mirai']
+    Account: int
+    Host: str
+    Port: int = Field(18080, ge=0, le=65535)
+    AuthKey: str
+    NameforPrivateChat: bool = True
+    NameforGroupChat: bool = True
+
+
+UMRConfig.register_driver_config(MiraiDriverConfig)
+
+
 class MiraiDriver(BaseDriverMixin):
     def __init__(self, name):
+        super().__init__(name)
+
         self.name = name
         self.logger = UMRLogging.get_logger('Mirai')
         self.loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
         self.loop.set_exception_handler(self.handle_exception)
 
         self.image_cache = dict()
-        self.config: Dict = UMRConfig.config['Driver'][self.name]
+        self.config: MiraiDriverConfig = UMRConfig.config.Driver[self.name]
 
-        attributes = [
-            ('Account', False, None),
-            ('Host', False, None),
-            ('Port', False, None),
-            ('AuthKey', False, None),
-            ('NameforPrivateChat', True, True),
-            ('NameforGroupChat', True, True),
-        ]
-        check_attribute(self.config, attributes, self.logger)
-        self.qq = self.config['Account']
-        auth_key = self.config['AuthKey']
-        host = self.config['Host']
-        port = self.config['Port']
+        self.qq = self.config.Account
+        auth_key = self.config.AuthKey
+        host = self.config.Host
+        port = self.config.Port
 
         self.bot = Bot(self.qq, host, port, auth_key, loop=self.loop)
         self.updater = Updater(self.bot)
@@ -653,7 +660,7 @@ class MiraiDriver(BaseDriverMixin):
         for m in message_chain[1:]:
             if isinstance(m, Image):
                 # message not empty or contained a image, append to list
-                if unified_message.message or unified_message.image:
+                if unified_message.text or unified_message.image:
                     message_list.append(unified_message)
                     unified_message = UnifiedMessage(platform=self.name,
                                                      chat_id=chat_id,
@@ -665,29 +672,29 @@ class MiraiDriver(BaseDriverMixin):
                 self.logger.debug(f'Received image: [{m.imageId}]')
 
             elif isinstance(m, Plain):
-                unified_message.message += m.text
+                unified_message.text += m.text
             elif isinstance(m, At):
 
                 at_user_text = m.display
-                unified_message.message_entities.append(
-                    MessageEntity(start=len(unified_message.message),
-                                  end=len(unified_message.message) + len(at_user_text),
+                unified_message.text_entities.append(
+                    MessageEntity(start=len(unified_message.text),
+                                  end=len(unified_message.text) + len(at_user_text),
                                   entity_type=EntityType.BOLD))
-                unified_message.message += at_user_text
+                unified_message.text += at_user_text
             elif isinstance(m, AtAll):
 
                 at_user_text = '[@All]'
-                unified_message.message_entities.append(
-                    MessageEntity(start=len(unified_message.message),
-                                  end=len(unified_message.message) + len(at_user_text),
+                unified_message.text_entities.append(
+                    MessageEntity(start=len(unified_message.text),
+                                  end=len(unified_message.text) + len(at_user_text),
                                   entity_type=EntityType.BOLD))
-                unified_message.message += at_user_text
+                unified_message.text += at_user_text
             elif isinstance(m, Face):
                 qq_face = int(m.faceId) & 255
                 if qq_face in qq_emoji_list:
-                    unified_message.message += qq_emoji_list[qq_face]
+                    unified_message.text += qq_emoji_list[qq_face]
                 else:
-                    unified_message.message += '\u2753'  # ❓
+                    unified_message.text += '\u2753'  # ❓
             elif isinstance(m, Source):
                 pass
             elif isinstance(m, Quote):
@@ -756,8 +763,8 @@ class MiraiDriver(BaseDriverMixin):
         """
         messages = list()
 
-        if (chat_type == ChatType.PRIVATE and self.config['NameforPrivateChat']) or \
-                (chat_type in (ChatType.GROUP, ChatType.DISCUSS) and self.config['NameforGroupChat']):
+        if (chat_type == ChatType.PRIVATE and self.config.NameforPrivateChat) or \
+                (chat_type in (ChatType.GROUP, ChatType.DISCUSS) and self.config.NameforGroupChat):
             # name logic
             if message.chat_attrs.name:
                 messages.append(Plain(text=message.chat_attrs.name))
@@ -773,8 +780,8 @@ class MiraiDriver(BaseDriverMixin):
             messages.append(At(target=message.send_action.user_id))
             messages.append(Plain(text=' '))
 
-        if message.message:
-            messages.append(Plain(text=message.message))
+        if message.text:
+            messages.append(Plain(text=message.text))
 
         if message.image:
             if chat_type == ChatType.PRIVATE:
