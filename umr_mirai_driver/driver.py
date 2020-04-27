@@ -1,8 +1,8 @@
 import asyncio
 
 from mirai_core import Bot, Updater
-from mirai_core.models.events import EventTypes, GroupMessage, FriendMessage
-from mirai_core.models.message import MessageChain, Image, Plain, At, AtAll, LocalImage, Face, Source, ImageType, Quote
+from mirai_core.models.Event import EventTypes, GroupMessage, FriendMessage
+from mirai_core.models.Message import MessageChain, Image, Plain, At, AtAll, Face, Source, TargetType, Quote, FlashImage
 
 from unified_message_relay.Core.UMRType import ChatType, UnifiedMessage, MessageEntity, EntityType, ChatAttribute
 from unified_message_relay.Core.UMRMessageRelation import set_ingress_message_id, set_egress_message_id
@@ -658,7 +658,7 @@ class MiraiDriver(BaseDriverMixin):
                                                                 message_id=quote.id)
 
         for m in message_chain[1:]:
-            if isinstance(m, Image):
+            if isinstance(m, (Image, FlashImage)):
                 # message not empty or contained a image, append to list
                 if unified_message.text or unified_message.image:
                     message_list.append(unified_message)
@@ -700,6 +700,7 @@ class MiraiDriver(BaseDriverMixin):
             elif isinstance(m, Quote):
                 pass
             else:
+                unified_message.text += str(m)
                 self.logger.debug(f'Unhandled message type: {str(m)}')
 
         message_list.append(unified_message)
@@ -784,34 +785,43 @@ class MiraiDriver(BaseDriverMixin):
             messages.append(Plain(text=message.text))
 
         if message.image:
-            if chat_type == ChatType.PRIVATE:
-                image_type = ImageType.Friend
-            else:
-                image_type = ImageType.Group
-            image_id = self.image_cache.get((image_type, message.image))
+            # if chat_type == ChatType.PRIVATE:
+            #     image_type = TargetType.Friend
+            # else:
+            #     image_type = TargetType.Group
+            image_id = self.image_cache.get((chat_type, message.image))
             if image_id:
                 image = Image(imageId=image_id)
             else:
-                image = await self.bot.upload_image(image_type=image_type, image_path=message.image)
-                self.image_cache[(image_type, message.image)] = image.imageId
+                image = Image(path=message.image)
+                # image = await self.bot.upload_image(image_type=image_type, image_path=message.image)
+                # self.image_cache[(image_type, message.image)] = image.imageId
             messages.append(image)
             self.logger.info('If QQ does not receive this message, '
                              'your account might be suspected of being compromised by Tencent')
 
         if chat_type == ChatType.PRIVATE:
             quote = message.send_action.message_id or None
-            egress_message = await self.bot.send_friend_message(
-                to_chat,
-                messages,
-                quote
+            egress_message = await self.bot.send_message(
+                target=to_chat,
+                chat_type=TargetType.Friend,
+                message=messages,
+                quote_source=quote,
+                save_image_id=True
             )
         else:
             quote = message.send_action.message_id or None
-            egress_message = await self.bot.send_group_message(
-                to_chat,
-                messages,
-                quote
+            egress_message = await self.bot.send_message(
+                target=to_chat,
+                chat_type=TargetType.Group,
+                message=messages,
+                quote_source=quote,
+                save_image_id=True
             )
+        for i in messages:
+            if isinstance(i, Image):
+                self.image_cache[(chat_type, message.image)] = i.imageId
+                break
 
         if message.chat_attrs:
             set_egress_message_id(src_platform=message.chat_attrs.platform,
