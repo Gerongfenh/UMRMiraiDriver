@@ -1,8 +1,9 @@
 import asyncio
 
 from mirai_core import Bot, Updater
-from mirai_core.models.Event import EventTypes, GroupMessage, FriendMessage
-from mirai_core.models.Message import MessageChain, Image, Plain, At, AtAll, Face, Source, TargetType, Quote, FlashImage
+from mirai_core.models.Event import Message, BotOnlineEvent
+from mirai_core.models.Types import MessageType
+from mirai_core.models.Message import MessageChain, Image, Plain, At, AtAll, Face, Source, Quote, FlashImage
 
 from unified_message_relay.Core.UMRType import ChatType, UnifiedMessage, MessageEntity, EntityType, ChatAttribute
 from unified_message_relay.Core.UMRMessageRelation import set_ingress_message_id, set_egress_message_id
@@ -611,28 +612,53 @@ class MiraiDriver(BaseDriverMixin):
         self.bot = Bot(self.qq, host, port, auth_key, loop=self.loop)
         self.updater = Updater(self.bot)
 
-        @self.updater.add_handler(EventTypes.FriendMessage)
-        async def friend_message(event: FriendMessage):
+        @self.updater.add_handler(BotOnlineEvent)
+        async def friend_message(event: BotOnlineEvent):
+            print(111)
 
-            self.logger.debug(f"[private][{event.sender.id}]: " +
+        @self.updater.add_handler(Message)
+        async def friend_message(event: Message):
+
+            if event.type == MessageType.GROUP.value:
+                chat_type = ChatType.GROUP
+                username = event.member.memberName
+                chat_id = event.member.group.id
+                user_id = event.member.id
+            elif event.type == MessageType.FRIEND.value:
+                chat_type = ChatType.PRIVATE
+                username = event.friend.remark or event.friend.nickname
+                chat_id = event.friend.id
+                user_id = event.friend.id
+            else:
+                chat_type = ChatType.GROUP
+                username = event.member.memberName
+                chat_id = event.member.id
+                user_id = event.member.id
+
+            self.logger.debug(f"[{event.type}][{chat_id}][{username}({user_id})]: " +
                               str(event.messageChain))
 
-            await self.general_receive(message_chain=event.messageChain,
-                                       chat_id=event.sender.id,
-                                       chat_type=ChatType.PRIVATE,
-                                       username=event.sender.nickname,
-                                       user_id=event.sender.id)
+            message_id = event.messageChain.get_source().id
 
-        @self.updater.add_handler(EventTypes.GroupMessage)
-        async def group_message(event: GroupMessage):
-            self.logger.debug(f"[{event.sender.group.id}][{event.sender.id}]: " +
-                              str(event.messageChain))
+            set_ingress_message_id(src_platform=self.name,
+                                   src_chat_id=chat_id,
+                                   src_chat_type=chat_type,
+                                   src_message_id=message_id,
+                                   user_id=user_id)
 
-            await self.general_receive(message_chain=event.messageChain,
-                                       chat_id=event.sender.group.id,
-                                       chat_type=ChatType.GROUP,
-                                       username=event.sender.memberName,
-                                       user_id=event.sender.id)
+            if event.type == MessageType.TEMP:
+                username += ' [TempMessage]'
+            unified_message_list = await self.parse_message(message_chain=event.messageChain,
+                                                            chat_id=chat_id,
+                                                            chat_type=chat_type,
+                                                            username=username,
+                                                            user_id=user_id,
+                                                            message_id=message_id)
+            try:
+                for message in unified_message_list:
+                    await self.receive(message)
+            except Exception as e:
+                self.logger.exception('unhandled exception:', exc_info=e)
 
     async def parse_message(self,
                             message_chain: MessageChain,
@@ -660,7 +686,7 @@ class MiraiDriver(BaseDriverMixin):
         for m in message_chain[1:]:
             if isinstance(m, (Image, FlashImage)):
                 # message not empty or contained a image, append to list
-                if unified_message.text or unified_message.image:
+                if unified_message.image or unified_message.text:
                     message_list.append(unified_message)
                     unified_message = UnifiedMessage(platform=self.name,
                                                      chat_id=chat_id,
@@ -706,33 +732,6 @@ class MiraiDriver(BaseDriverMixin):
         message_list.append(unified_message)
         return message_list
 
-    async def general_receive(self,
-                              message_chain: MessageChain,
-                              chat_id: int,
-                              chat_type: ChatType,
-                              username: str,
-                              user_id: int):
-
-        message_id = message_chain.get_source().id
-
-        set_ingress_message_id(src_platform=self.name,
-                               src_chat_id=chat_id,
-                               src_chat_type=chat_type,
-                               src_message_id=message_id,
-                               user_id=user_id)
-
-        unified_message_list = await self.parse_message(message_chain=message_chain,
-                                                        chat_id=chat_id,
-                                                        chat_type=chat_type,
-                                                        username=username,
-                                                        user_id=user_id,
-                                                        message_id=message_id)
-        try:
-            for message in unified_message_list:
-                await self.receive(message)
-        except Exception as e:
-            self.logger.exception('unhandled exception:', exc_info=e)
-
     def start(self):
         def run():
             nonlocal self
@@ -769,8 +768,8 @@ class MiraiDriver(BaseDriverMixin):
             # name logic
             if message.chat_attrs.name:
                 messages.append(Plain(text=message.chat_attrs.name))
-            if message.chat_attrs.reply_to:
-                messages.append(Plain(text=' (➡️️' + message.chat_attrs.reply_to.name + ')'))
+            # if message.chat_attrs.reply_to:
+            #     messages.append(Plain(text=' (➡️️' + message.chat_attrs.reply_to.name + ')'))
             if message.chat_attrs.forward_from:
                 messages.append(Plain(text=' (️️↩️' + message.chat_attrs.forward_from.name + ')'))
             if message.chat_attrs.name:
@@ -800,24 +799,25 @@ class MiraiDriver(BaseDriverMixin):
             self.logger.info('If QQ does not receive this message, '
                              'your account might be suspected of being compromised by Tencent')
 
+        quote = message.send_action.message_id or None
+        temp_group = None
         if chat_type == ChatType.PRIVATE:
-            quote = message.send_action.message_id or None
-            egress_message = await self.bot.send_message(
-                target=to_chat,
-                chat_type=TargetType.Friend,
-                message=messages,
-                quote_source=quote,
-                save_image_id=True
-            )
+            message_type = MessageType.FRIEND
         else:
-            quote = message.send_action.message_id or None
-            egress_message = await self.bot.send_message(
-                target=to_chat,
-                chat_type=TargetType.Group,
-                message=messages,
-                quote_source=quote,
-                save_image_id=True
-            )
+            if '[TempMessage]' in message.chat_attrs.name:
+                message_type = MessageType.Temp
+                temp_group = message.chat_attrs.chat_id
+            else:
+                message_type = MessageType.GROUP
+
+        egress_message = await self.bot.send_message(
+            target=to_chat,
+            message_type=message_type,
+            message=messages,
+            temp_group=temp_group,
+            quote_source=quote
+        )
+
         for i in messages:
             if isinstance(i, Image):
                 self.image_cache[(chat_type, message.image)] = i.imageId
