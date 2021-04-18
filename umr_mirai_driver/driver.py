@@ -773,7 +773,7 @@ class MiraiDriver(BaseDriverMixin):
             if message.chat_attrs.forward_from:
                 messages.append(Plain(text=' (️️↩️' + message.chat_attrs.forward_from.name + ')'))
             if message.chat_attrs.name:
-                messages.append(Plain(text=': '))
+                messages.append(Plain(text='(' + str(quote.senderId) + '): '))
 
         # at user
         if not message.send_action.message_id and message.send_action.user_id:
