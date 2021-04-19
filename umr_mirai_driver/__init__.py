@@ -1,3 +1,3 @@
 from . import driver
 
-__VERSION__ = '0.5'
+__VERSION__ = '0.6'
